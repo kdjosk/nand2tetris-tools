@@ -1,4 +1,4 @@
-use std::str::Chars;
+use std::str::{Chars, FromStr};
 use phf::phf_map;
 
 /// acccccc part
@@ -43,6 +43,8 @@ static JUMP: phf::Map<&'static str, &'static str> = phf_map! {
     "JMP" => "111",
 };
 
+const NULL_JUMP: &'static str = "000";
+
 #[rustfmt::skip]
 static DEST: phf::Map<&'static str, &'static str> = phf_map! {
     "M"   => "001",
@@ -54,78 +56,190 @@ static DEST: phf::Map<&'static str, &'static str> = phf_map! {
     "ADM" => "111",
 };
 
-pub enum InstructionType {
-    Address,
-    Compute,
-    Label,
+const NULL_DEST: &'static str = "000";
+const EOF: char = '\0';
+
+
+pub fn assemble_program(text: &str) -> String {
+    let mut cursor = text.chars();
+    emit_instruction(&mut cursor)
 }
 
-pub struct HackParser<'a> {
-    chars: Chars<'a>,
-    text: &'a str,
-    // current position in the text
-    current: usize,
-    // start of current token
-    start: usize,
-    // current line
-    line: usize,
+fn emit_instruction(cursor: &mut Chars) -> String {
+    skip_whitespace(cursor);
+    match peek(cursor) {
+        '@' => {
+            advance(cursor);
+            symbol(cursor)
+        },
+        '(' => {
+            advance(cursor);
+            let s = symbol(cursor);
+            eat(cursor, ')');
+            s
+        },
+        _ => compute_instruction(cursor),
+    }
 }
 
-impl<'a> HackParser<'a> {
-    pub fn new(input: &'a str) -> HackParser<'a> {
-        HackParser {
-            chars: input.chars(),
-            text: input,
-            current: 0,
-            start: 0,
-            line: 1,
+fn compute_instruction(cursor: &mut Chars) -> String {
+    let dest = parse_dest(cursor);
+    println!("Parsed destination: {}", dest);
+    let dest_bin;
+    if dest.is_empty() {
+        dest_bin = NULL_DEST;
+    } else if DEST.contains_key(&dest) {
+        dest_bin = DEST.get(&dest).unwrap();
+    } else {
+        panic!("Unknown destination: {}", dest);
+    }
+
+    let comp = parse_comp(cursor);
+    println!("Parsed computation: {}", comp);
+    let comp_bin;
+    if comp.is_empty() {
+        panic!("Empty computation not allowed");
+    } else if COMP.contains_key(&comp) {
+        comp_bin = COMP.get(&comp).unwrap();
+    } else {
+        panic!("Unknown computation: {}", comp);
+    }
+
+    let jump = parse_jump(cursor);
+    println!("Parsed jump: {}", jump);
+    let jump_bin;
+    if jump.is_empty() {
+        jump_bin = NULL_JUMP;
+    } else if JUMP.contains_key(&jump) {
+        jump_bin = JUMP.get(&jump).unwrap();
+    } else {
+        panic!("Unknown jump: {}", jump);
+    }
+
+    let mut instruction = String::from(dest_bin);
+    instruction.extend(comp_bin.chars().chain(jump_bin.chars()));
+    instruction
+}
+
+fn parse_comp(cursor: &mut Chars) -> String {
+    let mut comp_text = String::new();
+    loop {
+        match peek(cursor) {
+            '0' | '1'| '-' | '+' | '!' | '&' | '|' |'A' | 'D' | 'M'  => {
+                comp_text.push(advance(cursor));
+            }
+            ';' => {
+                advance(cursor);
+                break;
+            }
+            _ => {
+                break;
+            }
         }
     }
-    
-    /// Are there more lines in the input?
-    pub fn has_more_lines(&self) -> bool {
-        todo!()
-    }
-
-    /// Skips over white space and comments, if necessary.
-    /// Reads the next instruction from the input.
-    /// Should be called only if has_more_lines is true.
-    /// Initially there's no current instruction.
-    pub fn advance() {
-        todo!()
-    }
-
-    /// Returns the type of the current instruction
-    pub fn instruction_type() -> InstructionType {
-        todo!()
-    }
-
-    /// If the current instruction is (xxx), returns the symbol xxx.
-    /// If the current instruction is @xxx, returns the symbol or decimal xxx (as a string)
-    pub fn symbol() -> String {
-        todo!()
-    }
-
-    /// Returns the symbolic dest part of the current C-instruction (8 possibilities)
-    pub fn dest() -> String {
-        todo!()
-    }
-
-    /// Returns the symbolic comp part of the current C-instruction (28 possibilities)
-    pub fn comp() -> String {
-        todo!()
-    }
-
-    /// Returns the symbolic jump part of the current C-instruction (8 possibilities)
-    pub fn jump() -> String {
-        todo!()
-    }
-
-
+    comp_text
 }
 
-fn main() {
-    let scanner = HackParser::new("@17");
+fn parse_dest(cursor: &mut Chars) -> String {
+    let mut dest_text = String::new();
+    // Clone the cursor to iterate until we're sure this is a destination, and not a computation
+    let mut tmp_cursor = cursor.clone();
+    loop {
+        match peek(&tmp_cursor) {
+            'A' | 'D' | 'M' => {
+                dest_text.push(advance(&mut tmp_cursor));
+            }
+            '=' => {
+                advance(&mut tmp_cursor);
+                // swap iterators as we're sure this is a destination
+                *cursor = tmp_cursor;
+                return dest_text;
+            }
+            _ => {
+                // not a destination, return an empty string
+                return String::new();
+            }
+        }
+    }
+}
 
+fn parse_jump(cursor: &mut Chars) -> String {
+    let mut jmp_text = String::new();
+    match peek(cursor) {
+        'J' => {
+            jmp_text.push(advance(cursor));
+            jmp_text.push(advance(cursor));
+            jmp_text.push(advance(cursor));
+        }
+        _ => ()
+    }
+    jmp_text
+}
+
+fn eat(cursor: &mut Chars, expect: char) {
+    let ch = advance(cursor);
+    if ch != expect {
+        panic!("Expected {}, but got {}", expect, ch);
+    }
+}
+
+fn symbol(cursor: &mut Chars) -> String { 
+    let mut symbol_text = String::new();
+    loop {
+        match peek(cursor) {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => {
+                symbol_text.push(advance(cursor));
+            }
+            _ => break,
+        }
+    }
+    symbol_text
+}
+
+fn peek(cursor: &Chars) -> char {
+    cursor.clone().next().unwrap_or_else(|| EOF)
+}
+
+fn peek_next(cursor: &Chars) -> char {
+    let mut c = cursor.clone();
+    c.next();
+    c.next().unwrap_or_else(|| EOF)
+}
+
+fn advance(cursor: &mut Chars) -> char {
+    cursor.next().unwrap_or_else(|| EOF)
+}
+
+fn skip_whitespace(cursor: &mut Chars) {
+    loop {
+        match peek(cursor) {
+            ' ' | '\t' | '\r' | '\n' => {advance(cursor);}
+            '/' => {
+                if peek_next(cursor) == '/' {
+                    loop {
+                        match advance(cursor) {
+                            EOF | '\n' => break,
+                            _ => continue,
+                        }
+                    }
+                } else {
+                    break
+                }
+            },
+            _ => break,
+        };
+    }
+}
+
+
+fn main() {
+    let instruction = assemble_program("@17");
+    println!("{}", instruction);
+
+    let instruction = assemble_program("(LOOP)");
+    println!("{}", instruction);
+
+    let instruction = assemble_program("0");
+    println!("{}", instruction);
 }
 
