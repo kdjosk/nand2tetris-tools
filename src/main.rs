@@ -1,4 +1,4 @@
-use std::str::{Chars, FromStr};
+use std::{collections::HashMap, env::var, str::Chars};
 use phf::phf_map;
 
 /// acccccc part
@@ -56,190 +56,371 @@ static DEST: phf::Map<&'static str, &'static str> = phf_map! {
     "ADM" => "111",
 };
 
+#[rustfmt::skip]
+static BUILTIN_SYMBOLS: phf::Map<&'static str, u32> = phf_map!{
+    "R0" => 0,
+    "R1" => 1,
+    "R2" => 2,
+    "R3" => 3,
+    "R4" => 4,
+    "R5" => 5,
+    "R6" => 6,
+    "R7" => 7,
+    "R8" => 8,
+    "R9" => 9,
+    "R10" => 10,
+    "R11" => 11,
+    "R12" => 12,
+    "R13" => 13,
+    "R14" => 14,
+    "R15" => 15,
+    "SP" => 0,
+    "LCL" => 1,
+    "ARG" => 2,
+    "THIS" => 3,
+    "THAT" => 4,
+    "SCREEN" => 0x4000,
+    "KBD" => 0x6000,
+};
+
 const NULL_DEST: &'static str = "000";
 const EOF: char = '\0';
 
-
-pub fn assemble_program(text: &str) -> String {
-    let mut cursor = text.chars();
-    emit_instruction(&mut cursor)
+#[derive(Debug)]
+enum Instruction {
+    Constant(String),
+    AddressVariable(String),
+    Label(String),
+    Compute(String),
 }
 
-fn emit_instruction(cursor: &mut Chars) -> String {
-    skip_whitespace(cursor);
-    match peek(cursor) {
-        '@' => {
-            advance(cursor);
-            symbol(cursor)
-        },
-        '(' => {
-            advance(cursor);
-            let s = symbol(cursor);
-            eat(cursor, ')');
-            s
-        },
-        _ => compute_instruction(cursor),
-    }
+struct HackAssembler<'a> {
+    cursor: Chars<'a>,
+    symbol_table: HashMap<String, Option<u32>>,
+    current_instruction_address: u32,
 }
 
-fn compute_instruction(cursor: &mut Chars) -> String {
-    let dest = parse_dest(cursor);
-    println!("Parsed destination: {}", dest);
-    let dest_bin;
-    if dest.is_empty() {
-        dest_bin = NULL_DEST;
-    } else if DEST.contains_key(&dest) {
-        dest_bin = DEST.get(&dest).unwrap();
-    } else {
-        panic!("Unknown destination: {}", dest);
-    }
+impl<'a> HackAssembler<'a> {
 
-    let comp = parse_comp(cursor);
-    println!("Parsed computation: {}", comp);
-    let comp_bin;
-    if comp.is_empty() {
-        panic!("Empty computation not allowed");
-    } else if COMP.contains_key(&comp) {
-        comp_bin = COMP.get(&comp).unwrap();
-    } else {
-        panic!("Unknown computation: {}", comp);
-    }
-
-    let jump = parse_jump(cursor);
-    println!("Parsed jump: {}", jump);
-    let jump_bin;
-    if jump.is_empty() {
-        jump_bin = NULL_JUMP;
-    } else if JUMP.contains_key(&jump) {
-        jump_bin = JUMP.get(&jump).unwrap();
-    } else {
-        panic!("Unknown jump: {}", jump);
-    }
-
-    let mut instruction = String::from(dest_bin);
-    instruction.extend(comp_bin.chars().chain(jump_bin.chars()));
-    instruction
-}
-
-fn parse_comp(cursor: &mut Chars) -> String {
-    let mut comp_text = String::new();
-    loop {
-        match peek(cursor) {
-            '0' | '1'| '-' | '+' | '!' | '&' | '|' |'A' | 'D' | 'M'  => {
-                comp_text.push(advance(cursor));
-            }
-            ';' => {
-                advance(cursor);
-                break;
-            }
-            _ => {
-                break;
-            }
+    pub fn new(text: &str) -> HackAssembler {
+        let cursor = text.chars();
+        let mut symbol_table= HashMap::new();
+        for entry in BUILTIN_SYMBOLS.entries() {
+            symbol_table.insert(String::from(*entry.0), Some(*entry.1));
+        }
+        HackAssembler {
+            cursor,
+            symbol_table,
+            current_instruction_address: 0,
         }
     }
-    comp_text
-}
 
-fn parse_dest(cursor: &mut Chars) -> String {
-    let mut dest_text = String::new();
-    // Clone the cursor to iterate until we're sure this is a destination, and not a computation
-    let mut tmp_cursor = cursor.clone();
-    loop {
-        match peek(&tmp_cursor) {
-            'A' | 'D' | 'M' => {
-                dest_text.push(advance(&mut tmp_cursor));
+    pub fn assemble_program(&mut self) -> Vec<String> {
+        let mut program = Vec::new();
+        while let Some(instruction) = self.emit_instruction() {
+            match instruction {
+                Instruction::Label(_) => (),
+                _ => self.current_instruction_address += 1,
             }
-            '=' => {
-                advance(&mut tmp_cursor);
-                // swap iterators as we're sure this is a destination
-                *cursor = tmp_cursor;
-                return dest_text;
-            }
-            _ => {
-                // not a destination, return an empty string
-                return String::new();
-            }
+            program.push(instruction);
         }
+        self.resolve_symbols(program)
     }
-}
-
-fn parse_jump(cursor: &mut Chars) -> String {
-    let mut jmp_text = String::new();
-    match peek(cursor) {
-        'J' => {
-            jmp_text.push(advance(cursor));
-            jmp_text.push(advance(cursor));
-            jmp_text.push(advance(cursor));
-        }
-        _ => ()
-    }
-    jmp_text
-}
-
-fn eat(cursor: &mut Chars, expect: char) {
-    let ch = advance(cursor);
-    if ch != expect {
-        panic!("Expected {}, but got {}", expect, ch);
-    }
-}
-
-fn symbol(cursor: &mut Chars) -> String { 
-    let mut symbol_text = String::new();
-    loop {
-        match peek(cursor) {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => {
-                symbol_text.push(advance(cursor));
-            }
-            _ => break,
-        }
-    }
-    symbol_text
-}
-
-fn peek(cursor: &Chars) -> char {
-    cursor.clone().next().unwrap_or_else(|| EOF)
-}
-
-fn peek_next(cursor: &Chars) -> char {
-    let mut c = cursor.clone();
-    c.next();
-    c.next().unwrap_or_else(|| EOF)
-}
-
-fn advance(cursor: &mut Chars) -> char {
-    cursor.next().unwrap_or_else(|| EOF)
-}
-
-fn skip_whitespace(cursor: &mut Chars) {
-    loop {
-        match peek(cursor) {
-            ' ' | '\t' | '\r' | '\n' => {advance(cursor);}
-            '/' => {
-                if peek_next(cursor) == '/' {
-                    loop {
-                        match advance(cursor) {
-                            EOF | '\n' => break,
-                            _ => continue,
-                        }
+    
+    fn resolve_symbols(&mut self, program: Vec<Instruction>) -> Vec<String> {
+        let mut resolved_program = Vec::new();
+        let mut next_free_address = 16;
+        for instruction in program {
+            match instruction {
+                Instruction::AddressVariable(var_name) => {
+                    let address = self.symbol_table.get(&var_name).unwrap();
+                    if let Some(addr) = address {
+                        // This is for already resolved symbols
+                        resolved_program.push(format!("0{addr:015b}"));
+                    } else {
+                        self.symbol_table.insert(var_name.clone(), Some(next_free_address));
+                        resolved_program.push(format!("0{next_free_address:015b}"));
+                        next_free_address += 1;
                     }
-                } else {
-                    break
+                    
                 }
+                Instruction::Label(_) => continue,
+                Instruction::Compute(binary_instruction) => {
+                    resolved_program.push(binary_instruction);
+                }
+                Instruction::Constant(binary_instruction) => {
+                    resolved_program.push(binary_instruction);
+                }
+            }
+        }
+        println!("{:?}", self.symbol_table);
+        resolved_program
+    }
+
+    fn emit_instruction(&mut self) -> Option<Instruction> {
+        self.skip_whitespace();
+        match self.peek() {
+            '@' => {
+                self.advance();
+                let symbol_text = self.symbol();
+                if let Ok(value) = symbol_text.parse::<u32>() {
+                    return Some(Instruction::Constant(format!("0{value:015b}")));
+                }
+                if !self.symbol_table.contains_key(&symbol_text) {
+                    self.symbol_table.insert(symbol_text.clone(), None);
+                }
+                return Some(Instruction::AddressVariable(symbol_text));
             },
-            _ => break,
-        };
+            '(' => {
+                self.advance();
+                let label = self.symbol();
+                self.eat(')');
+                self.symbol_table.insert(label.clone(), Some(self.current_instruction_address));
+                println!("Assigned {} to {}", label, self.current_instruction_address);
+
+                Some(Instruction::Label(label))
+            },
+            EOF => None,
+            _ => {
+                Some(Instruction::Compute(self.compute_instruction()))
+            },
+        }
+    }
+
+
+    fn compute_instruction(&mut self) -> String {
+        let dest = self.parse_dest();
+        let dest_bin;
+        if dest.is_empty() {
+            dest_bin = NULL_DEST;
+        } else if DEST.contains_key(&dest) {
+            dest_bin = DEST.get(&dest).unwrap();
+        } else {
+            panic!("Unknown destination: {}", dest);
+        }
+
+        let comp = self.parse_comp();
+        let comp_bin;
+        if comp.is_empty() {
+            panic!("Empty computation not allowed");
+        } else if COMP.contains_key(&comp) {
+            comp_bin = COMP.get(&comp).unwrap();
+        } else {
+            panic!("Unknown computation: {}", comp);
+        }
+
+        let jump = self.parse_jump();
+        let jump_bin;
+        if jump.is_empty() {
+            jump_bin = NULL_JUMP;
+        } else if JUMP.contains_key(&jump) {
+            jump_bin = JUMP.get(&jump).unwrap();
+        } else {
+            panic!("Unknown jump: {}", jump);
+        }
+        
+        println!("Parsed C-instruction: comp={}, dest={}, jmp={}", comp, dest, jump);
+
+        let mut instruction = String::from("111");
+        instruction.extend(
+                comp_bin.chars()
+                .chain(dest_bin.chars())
+                .chain(jump_bin.chars())
+        );
+        instruction
+    }
+
+    fn parse_comp(&mut self) -> String {
+        let mut comp_text = String::new();
+        loop {
+            match self.peek() {
+                '0' | '1'| '-' | '+' | '!' | '&' | '|' |'A' | 'D' | 'M'  => {
+                    comp_text.push(self.advance());
+                }
+                ';' => {
+                    self.advance();
+                    break;
+                }
+                _ => {
+                    break;
+                }
+            }
+        }
+        comp_text
+    }
+
+    fn parse_dest(&mut self) -> String {
+        let mut dest_text = String::new();
+        // Save the cursor and iterate until we're sure this is a destination, and not a computation
+        // If this is not the destination, swap back the old cursor
+        let unchanged_cursor = self.cursor.clone();
+        loop {
+            match self.peek() {
+                'A' | 'D' | 'M' => {
+                    dest_text.push(self.advance());
+                }
+                '=' => {
+                    self.advance();
+                    return dest_text;
+                }
+                _ => {
+                    // not a destination, return an empty string
+                    self.cursor = unchanged_cursor;
+                    return String::new();
+                }
+            }
+        }
+    }
+
+    fn parse_jump(&mut self) -> String {
+        let mut jmp_text = String::new();
+        match self.peek() {
+            'J' => {
+                jmp_text.push(self.advance());
+                jmp_text.push(self.advance());
+                jmp_text.push(self.advance());
+            }
+            _ => ()
+        }
+        jmp_text
+    }
+
+    fn eat(&mut self, expect: char) {
+        let ch = self.advance();
+        if ch != expect {
+            panic!("Expected {}, but got {}", expect, ch);
+        }
+    }
+
+    fn symbol(&mut self) -> String { 
+        let mut symbol_text = String::new();
+        loop {
+            match self.peek() {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => {
+                    symbol_text.push(self.advance());
+                }
+                _ => break,
+            }
+        }
+        symbol_text
+    }
+
+    fn peek(&self) -> char {
+        self.cursor.clone().next().unwrap_or_else(|| EOF)
+    }
+
+    fn peek_next(&self) -> char {
+        let mut c = self.cursor.clone();
+        c.next();
+        c.next().unwrap_or_else(|| EOF)
+    }
+
+    fn advance(&mut self) -> char {
+        self.cursor.next().unwrap_or_else(|| EOF)
+    }
+
+    fn skip_whitespace(&mut self) {
+        loop {
+            match self.peek() {
+                ' ' | '\t' | '\r' | '\n' => {self.advance();}
+                '/' => {
+                    if self.peek_next() == '/' {
+                        loop {
+                            match self.advance() {
+                                EOF | '\n' => break,
+                                _ => continue,
+                            }
+                        }
+                    } else {
+                        break
+                    }
+                },
+                _ => break,
+            };
+        }
     }
 }
 
 
 fn main() {
-    let instruction = assemble_program("@17");
-    println!("{}", instruction);
+    let mut assembler = HackAssembler::new(
+"
+// This file is part of www.nand2tetris.org
+// and the book \"The Elements of Computing Systems\"
+// by Nisan and Schocken, MIT Press.
+// File name: projects/06/rect/Rect.asm
 
-    let instruction = assemble_program("(LOOP)");
-    println!("{}", instruction);
+// Draws a rectangle at the top-left corner of the screen.
+// The rectangle is 16 pixels wide and R0 pixels high.
 
-    let instruction = assemble_program("0");
-    println!("{}", instruction);
+   // If (R0 <= 0) goto END else n = R0
+   @R0
+   D=M
+   @END
+   D;JLE 
+   @n
+   M=D
+   // addr = base address of first screen row
+   @SCREEN
+   D=A
+   @addr
+   M=D
+(LOOP)
+   // RAM[addr] = -1
+   @addr
+   A=M
+   M=-1
+   // addr = base address of next screen row
+   @addr
+   D=M
+   @32
+   D=D+A
+   @addr
+   M=D
+   // decrements n and loops
+   @n
+   M=M-1
+   D=M
+   @LOOP
+   D;JGT
+(END)
+   @END
+   0;JMP
+");
+
+    let expected = vec![
+        "0000000000000000",
+        "1111110000010000",
+        "0000000000011000",
+        "1110001100000110",
+        "0000000000010000",
+        "1110001100001000",
+        "0100000000000000",
+        "1110110000010000",
+        "0000000000010001",
+        "1110001100001000",
+        "0000000000010001",
+        "1111110000100000",
+        "1110111010001000",
+        "0000000000010001",
+        "1111110000010000",
+        "0000000000100000",
+        "1110000010010000",
+        "0000000000010001",
+        "1110001100001000",
+        "0000000000010000",
+        "1111110010001000",
+        "1111110000010000",
+        "0000000000001010",
+        "1110001100000001",
+        "0000000000011000",
+        "1110101010000111",
+    ];
+    let program = assembler.assemble_program();
+    assert_eq!(program, expected);
+    for i in program {
+        println!("{}", i);
+    }
+    
 }
 
